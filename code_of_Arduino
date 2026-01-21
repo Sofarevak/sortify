@@ -1,1 +1,109 @@
- 
+#include <Servo.h>
+Servo swip;  
+Servo grab;   
+Servo downangle;
+Servo MainRotation; 
+int pos;
+int a = 0;
+int rasp;
+void grabbing() {
+  downangle.write(0);
+  for (pos = 0; pos <= 75; pos += 1) { 
+    grab.write(pos);              
+    delay(15);                       
+  }
+  delay(700);
+  for (pos=0;pos<=90;pos++){
+    downangle.write(pos);
+    delay(15);
+  }
+  delay(1300);
+}
+void release() {
+  downangle.write(90);
+  for (pos=90;pos>0;pos--){
+    downangle.write(pos);
+    delay(15);
+  }
+  delay(500);
+  for (pos = 75; pos >= 0; pos -- ) { 
+    grab.write(pos);             
+    delay(15);                       
+  }
+  delay(700);
+}
+void choose(int rasp) {
+  int pos;
+  switch(rasp) {
+    case 0:
+      for (pos = 90; pos > 0; pos--) {
+        MainRotation.write(pos);
+        delay(10);
+      }
+      break;
+      
+    case 1:
+      for (pos = 90; pos > 45; pos--) {
+        MainRotation.write(pos);
+        delay(10);
+      }
+      break;
+      
+    case 2:
+      for (pos = 90; pos <= 135; pos++) {
+        MainRotation.write(pos);
+        delay(10);
+      }
+      break;
+      
+    case 3:
+      for (pos = 90; pos <= 180; pos++) {
+        MainRotation.write(pos);
+        delay(10);
+      }
+      break;
+  }
+  
+  delay(1000);
+}
+void smoothMove(Servo &servo, int targetPos, int speedDelay = 20) {
+  int currentPos = servo.read();
+  
+  if (currentPos < targetPos) {
+    for (int pos = currentPos; pos <= targetPos; pos++) {
+      servo.write(pos);
+      delay(speedDelay);
+    }
+  } else {
+    for (int pos = currentPos; pos >= targetPos; pos--) {
+      servo.write(pos);
+      delay(speedDelay);
+    }
+  }
+}
+
+
+void setup() {
+  grab.attach(4);
+  grab.write(0);
+  MainRotation.attach(8);
+  MainRotation.write(90);
+  downangle.attach(7);
+  downangle.write(0);
+
+}
+
+void loop() {
+  if (a<=1){
+    grabbing();
+    rasp=1+a;
+    choose(rasp);
+    release();
+    delay(1500);
+    smoothMove(MainRotation, 90);
+    a++;
+  }
+}
+
+
+
