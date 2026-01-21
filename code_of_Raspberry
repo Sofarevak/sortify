@@ -1,0 +1,166 @@
+
+import cv2
+import numpy as np
+import tensorflow as tf
+import serial
+import glob
+import time
+
+# ====== Инциализация Arduino ======
+def find_arduino():
+        ports = glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")
+        for ARDUINO_PORT in ports:
+            try:
+                arduino = serial.Serial(ARDUINO_PORT, BAUDRATE, timeout=1)
+                time.sleep(2)
+                print("Arduino ON")
+                return arduino
+            except:
+                print("Arduino OFF")
+                return None
+            
+# ====== Параметры ======
+MODEL_PATH = "/home/prosto_kyst/project sartir/trash_model.tflite"
+LABELS_PATH = "labels.txt"
+BAUDRATE = 9600
+CONF_THRESHOLD = 0.8
+DETECTION_INTERVAL = 5
+arduino = find_arduino()
+
+# ====== Загрузка меток ======
+with open(LABELS_PATH) as f:
+    labels = [line.strip() for line in f.readlines()]
+
+# ====== Инциализация TFLite ======
+interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+input_height, input_width = input_details[0]['shape'][1], input_details[0]['shape'][2]
+
+# ====== Инциализация камеры ======
+pipeline = (
+    "libcamerasrc ! "
+    "video/x-raw,width=640,height=480,framerate=30/1 ! "
+    "videoconvert ! appsink")        # cap = cv2.VideoCapture(0) # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            # assert cap.isOpened(), "Камера не открылась"
+           
+cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+
+if not cap.isOpened():
+    raise RuntimeError("Camera Rasberry Pi не открылась")
+
+print(" Camera Rasberry PI подключена")
+
+# ====== Соотвествие классов командам Arduino ======
+class_commands = {
+    'paper': '1',
+    'plastic': '2',
+    'glass': '3',
+    'metal': '4'
+}
+
+# ====== Основной цикл ======
+auto_mode = True
+last_detection_time = 0
+detection_count = 0
+
+print("Управление:")
+print("   's' - принудительная проверка")
+print("   'a' - переключение авторежима")
+print("   'q' - выход")
+print(f"Авторежим: {'ВКЛ' if auto_mode else 'ВЫКЛ'}")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Ошибка чтения кадра")
+        break
+    
+    current_time = time.time()
+    status = "Готов к работе"
+
+    # ====== Автопроверка ======
+    if auto_mode and (current_time - last_detection_time > DETECTION_INTERVAL):
+        # Подготовка кадра
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(frame, (input_width, input_height))
+        img = img.astype(np.float32) / 255.0
+        img = np.expand_dims(img, axis=0)
+        # print("Model Expercted:", input_details[0]['shape'])
+        # print("Resized img shape", img.shape)
+
+        # Inference
+        interpreter.set_tensor(input_details[0]['index'], img)
+        interpreter.invoke()
+        output = interpreter.get_tensor(output_details[0]['index'])
+        output = np.squeeze(output)
+        print("OUTPUT SHAPE:", output.shape)
+        # logist = np.squeeze(output) preds = np.array(output).reshape(-1)
+        # logist = logist.flatten()
+        #preds = np.squeeze(preds) 
+
+        # #softmax
+        # exp_logist = np.exp(logist - np.max(logist))
+        # probs = exp_logist / np.sum(exp_logist)
+        # print("probs", output)
+        # print("CLASES", len(output))
+
+        # Опредление класса
+        class_id = int(np.argmax(output))
+        conf = float(output[class_id])
+        class_name = labels[class_id] if class_id < len(labels) else "Unknow"
+        print("class_id:", class_id)
+
+        last_detection_time = current_time
+        detection_count += 1
+        print(f"Разпознано: {class_name} (уверенность: {conf:.2f})")
+        
+        # Проверка камеры на Arduino
+        if conf > CONF_THRESHOLD:
+            command = class_commands.get(class_name, '0')
+            if arduino and arduino.is_open:
+                try:
+                    arduino.write(f"{command}\n".encode())
+                    time.sleep(0.1)
+                    if arduino.in_waiting:
+                        response = arduino.readline().decode().strip()
+                        print(f"Ответ от Arduino: {response}")
+                    status = f"Отправлено: {class_name}"
+                except:
+                    print("Rebooting Arduino")
+                    arduino = find_arduino()
+        else:
+            status = "Низкая уверенность"
+
+    # ====== Отрисовка информации ======
+    cv2.putText(frame, f"{class_name} ({conf:.2f})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    cv2.putText(frame, status, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(frame, "Press 's': scan, 'a': auto, 'q': quit", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+    if conf > 0.1:
+        bar_width = int(conf * 200)
+        color = (0, 255, 0) if conf > CONF_THRESHOLD else (0, 165, 255)
+        cv2.rectangle(frame, (10, 90), (10 + bar_width, 100), color, -1)
+        cv2.rectangle(frame, (10, 90), (210, 100), (255, 255, 255), 1)
+
+    cv2.imshow("Sortify - Rasberry PI", frame)
+
+    # ====== Управление ======
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('s'):
+        last_detection_time = 0
+    elif key == ord('a'):
+        auto_mode = not auto_mode
+        print(f"Авторежим: {'ВКЛ' if auto_mode else 'ВЫКЛ'}")
+    elif key == ord('q'):
+        break
+
+# ====== Очистка ======
+cap.release()
+cv2.destroyAllWindows()
+if arduino:
+    arduino.close()
+print(f"\n Статистика: {detection_count} распознований")
+print("Система остановлена")
